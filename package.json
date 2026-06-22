@@ -1,0 +1,8 @@
+{
+  "name": "sheetalerts",
+  "version": "0.0.0",
+  "scripts": {
+    "deploy": "bash ./scripts/deploy_all.sh",
+    "test": "deno test --allow-env --allow-net tests"
+  }
+}
