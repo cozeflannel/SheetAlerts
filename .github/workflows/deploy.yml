@@ -1,1 +1,62 @@
-# placeholder: CI workflow will be filled by LLM
+name: Deploy SheetAlerts
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: Deploy to Supabase
+    runs-on: ubuntu-latest
+
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_REF:  ${{ secrets.SUPABASE_PROJECT_REF }}
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Install Supabase CLI ───────────────────────────────────────────
+      - name: Install Supabase CLI
+        run: |
+          curl -fsSL https://github.com/supabase/cli/releases/latest/download/supabase_linux_amd64.tar.gz \
+            | tar -xz -C /usr/local/bin supabase
+          supabase --version
+
+      # ── 3. Authenticate & link project ────────────────────────────────────
+      - name: Link Supabase project
+        run: supabase link --project-ref "$SUPABASE_PROJECT_REF"
+
+      # ── 4. Apply database migrations ──────────────────────────────────────
+      - name: Run database migrations
+        run: supabase db push
+
+      # ── 5. Set Supabase Function secrets ──────────────────────────────────
+      - name: Set edge function secrets
+        run: |
+          supabase secrets set \
+            SERVICE_ROLE_KEY="${{ secrets.SERVICE_ROLE_KEY }}" \
+            SLACK_CLIENT_ID="${{ secrets.SLACK_CLIENT_ID }}" \
+            SLACK_CLIENT_SECRET="${{ secrets.SLACK_CLIENT_SECRET }}" \
+            SLACK_SIGNING_SECRET="${{ secrets.SLACK_SIGNING_SECRET }}" \
+            GOOGLE_SERVICE_ACCOUNT_BASE64="${{ secrets.GOOGLE_SERVICE_ACCOUNT_BASE64 }}" \
+            FUNCTION_BASE_URL="${{ secrets.FUNCTION_BASE_URL }}"
+
+      # ── 6. Deploy edge function ────────────────────────────────────────────
+      - name: Deploy alert-bot edge function
+        run: supabase functions deploy alert-bot --no-verify-jwt
+
+      # ── 7. Smoke test ─────────────────────────────────────────────────────
+      - name: Smoke test — edge function responds
+        run: |
+          HTTP_STATUS=$(curl -o /dev/null -s -w "%{http_code}" \
+            "${{ secrets.FUNCTION_BASE_URL }}?action=ping")
+          echo "Smoke test HTTP status: $HTTP_STATUS"
+          if [ "$HTTP_STATUS" = "500" ]; then
+            echo "ERROR: Edge function returned 500 — possible missing env var"
+            exit 1
+          fi
+          echo "Smoke test passed (status $HTTP_STATUS)"

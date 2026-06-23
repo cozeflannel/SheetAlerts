@@ -1,7 +1,38 @@
+/**
+ * src/appsscript.json
+ *
+ * Google Apps Script manifest for SheetAlerts Workspace Add-on.
+ * Declares all required OAuth scopes and add-on entry points.
+ */
 {
   "timeZone": "America/New_York",
   "dependencies": {},
   "exceptionLogging": "STACKDRIVER",
   "runtimeVersion": "V8",
-  "oauthScopes": []
+  "oauthScopes": [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/script.external_request",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/script.scriptapp"
+  ],
+  "addOns": {
+    "common": {
+      "name": "SheetAlerts",
+      "logoUrl": "https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsoutlined/notifications_active/default/24px.svg",
+      "homepageTrigger": {
+        "runFunction": "onHomepage",
+        "enabled": true
+      }
+    },
+    "sheets": {
+      "homepageTrigger": {
+        "runFunction": "onHomepage",
+        "enabled": true
+      },
+      "onFileScopeGrantedTrigger": {
+        "runFunction": "onFileScopeGranted"
+      }
+    }
+  }
 }
