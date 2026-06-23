@@ -594,8 +594,34 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return jsonResponse({ error: "Unknown GET action" }, 400);
   }
 
-  // ── Route: POST with application/x-www-form-urlencoded (Slack interactive) ─
+  // ── Route: POST application/json — url_verification challenge ────────────
+  // Slack sends url_verification as JSON (not form-urlencoded) when you first
+  // save the Interactivity Request URL in the Slack app settings.
+  // This MUST be handled before the form-urlencoded branch below, and it does
+  // NOT require signature verification (Slack sends no signature for this type).
   const contentType = req.headers.get("content-type") ?? "";
+  if (method === "POST" && contentType.includes("application/json")) {
+    // Peek at the body only long enough to check for url_verification.
+    // Clone the request so the body stream remains readable for the JSON
+    // routes below if this is not a url_verification request.
+    const cloned = req.clone();
+    let jsonBody: Record<string, unknown> = {};
+    try {
+      jsonBody = await cloned.json();
+    } catch {
+      // Not valid JSON — fall through to the form-urlencoded and JSON routes.
+    }
+    if (jsonBody.type === "url_verification") {
+      return new Response(String(jsonBody.challenge ?? ""), {
+        status: 200,
+        headers: { "Content-Type": "text/plain" },
+      });
+    }
+    // Not url_verification — fall through. The JSON POST routes below will
+    // re-read the body from the original `req` object (not the clone).
+  }
+
+  // ── Route: POST with application/x-www-form-urlencoded (Slack interactive) ─
   if (method === "POST" && contentType.includes("application/x-www-form-urlencoded")) {
     const rawBody = await req.text();
 
@@ -616,16 +642,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
     const payloadType = payload.type as string;
 
-    // ── url_verification ────────────────────────────────────────────────────
-    if (payloadType === "url_verification") {
-      const challenge = (payload as any).challenge;
-      return new Response(String(challenge ?? ""), {
-        status: 200,
-        headers: { "Content-Type": "text/plain" },
-      });
-    }
-
-    // ── Verify Slack signature for non-verification payloads ───────────────
+    // ── Verify Slack signature ─────────────────────────────────────────────
+    // (url_verification is handled above in the JSON branch — it never arrives
+    // as form-urlencoded, so every payload here must pass signature checking.)
     const valid = await verifySlackSignature(rawBody, req.headers);
     if (!valid) {
       console.error("Slack signature verification failed");
@@ -954,6 +973,41 @@ Deno.serve(async (req: Request): Promise<Response> => {
       await updateAlert(alertRow.id, { slack_sent: slackOk });
 
       return jsonResponse({ ok: true, slackResult });
+    }
+
+    // ── POST ?action=get_alert_for_row ──────────────────────────────────────
+    // Used by runConditionCheck() in Apps Script to check whether a row has
+    // already been successfully alerted before sending a duplicate notification.
+    if (action === "get_alert_for_row") {
+      const spreadsheetId = body.spreadsheet_id as string;
+      const rowIndex = body.row_index as number;
+
+      if (!spreadsheetId || rowIndex === undefined || rowIndex === null) {
+        return jsonResponse({ error: "Missing spreadsheet_id or row_index" }, 400);
+      }
+
+      // Return the most recent alert for this spreadsheet + row, if any.
+      const url =
+        `${Deno.env.get("SUPABASE_URL")}/rest/v1/alerts` +
+        `?spreadsheet_id=eq.${encodeURIComponent(spreadsheetId)}` +
+        `&row_index=eq.${rowIndex}` +
+        `&order=created_at.desc&limit=1`;
+
+      const res = await fetch(url, { headers: supabaseHeaders() });
+
+      if (!res.ok) {
+        const errBody = await res.text();
+        console.error("get_alert_for_row DB query failed:", res.status, errBody);
+        return jsonResponse({ error: "DB query failed" }, 500);
+      }
+
+      const rows: AlertRecord[] = await res.json();
+      if (rows.length === 0) {
+        return jsonResponse({ ok: false, error: "not_found" }, 404);
+      }
+
+      const { id, slack_sent, resolved } = rows[0];
+      return jsonResponse({ ok: true, alert: { id, slack_sent, resolved } });
     }
 
     // ── POST ?action=disconnect ─────────────────────────────────────────────

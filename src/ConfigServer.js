@@ -12,7 +12,7 @@
 
 /* global UrlFetchApp, ScriptApp, Logger */
 /* exported callEdgeFunction, getInstallation, saveInstallation,
-             getChannels, notifyServer, disconnectSlack */
+             getChannels, notifyServer, disconnectSlack, getAlertForRow */
 
 /**
  * Core HTTP wrapper. Calls the edge function with the Google OAuth token header.
@@ -171,4 +171,33 @@ function disconnectSlack(spreadsheetId) {
   }
 
   return true;
+}
+/**
+ * Returns the most recent alert record for a specific spreadsheet row, or null
+ * if no alert has been recorded for that row yet.
+ *
+ * Used by runConditionCheck() to skip rows that have already been successfully
+ * notified (slack_sent === true), preventing duplicate Slack messages.
+ *
+ * @param {string} spreadsheetId
+ * @param {number} rowIndex - 0-based row index (same value stored in alerts table)
+ * @returns {{ id: string, slack_sent: boolean, resolved: boolean }|null}
+ */
+function getAlertForRow(spreadsheetId, rowIndex) {
+  var result = callEdgeFunction('get_alert_for_row', 'POST', {
+    spreadsheet_id: spreadsheetId,
+    row_index: rowIndex,
+  });
+
+  if (!result.ok) {
+    if (result.data && result.data.error === 'not_found') {
+      return null; // No alert exists yet for this row — expected case
+    }
+    Logger.log(
+      '[SheetAlerts] getAlertForRow failed: ' + JSON.stringify(result.data)
+    );
+    return null;
+  }
+
+  return result.data.alert || null;
 }

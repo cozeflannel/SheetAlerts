@@ -117,11 +117,14 @@ function onSheetEdit(e) {
  * Triggers → + Add Trigger → runConditionCheck → Time-driven → (your schedule).
  *
  * Scans all non-header rows in the configured sheet and calls notifyServer()
- * for any row whose status column matches the trigger value.
+ * for any row whose status column matches the trigger value — but ONLY if that
+ * row has not already generated a Slack-sent alert in the database.
  *
- * Note: This trigger does NOT track which rows have already been alerted.
- * To avoid duplicate notifications, use the edit trigger (onSheetEdit) as the
- * primary mechanism and this as a fallback sweep.
+ * Dedup strategy: before notifying, we call getAlertForRow() on the server.
+ * If an alert row already exists for this spreadsheet + row_index with
+ * slack_sent=true, we skip it. This prevents the scheduler from re-firing
+ * notifications for rows that were already handled by onSheetEdit or a
+ * previous runConditionCheck run.
  */
 function runConditionCheck() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -161,12 +164,12 @@ function runConditionCheck() {
   }
 
   // Read all data rows (skip header row 1)
-  var statusColOneBased = (config.status_col_index || 0) + 1;
   var dataRange = sheet.getRange(2, 1, lastRow - 1, lastCol);
   var allValues = dataRange.getValues();
 
   var triggerValue = String(config.trigger_value).trim();
   var notified = 0;
+  var skipped = 0;
 
   for (var i = 0; i < allValues.length; i++) {
     var rowValues = allValues[i];
@@ -176,7 +179,32 @@ function runConditionCheck() {
       continue;
     }
 
-    var rowIndex = i + 1; // 0-based (row 2 → index 1)
+    var rowIndex = i + 1; // 0-based (row 2 in the sheet → index 1)
+
+    // ── Dedup check ────────────────────────────────────────────────────────
+    // Ask the server whether this row has already been successfully alerted.
+    // getAlertForRow returns null if no alert record exists or if
+    // slack_sent is false (meaning a previous attempt failed and we should
+    // retry), and returns the alert record if slack_sent is true (skip).
+    var existingAlert = null;
+    try {
+      existingAlert = getAlertForRow(spreadsheetId, rowIndex);
+    } catch (err) {
+      // If the lookup fails, err on the side of notifying rather than silently
+      // skipping — a duplicate alert is less harmful than a missed one.
+      Logger.log('[SheetAlerts] runConditionCheck: getAlertForRow threw, will notify anyway: ' + err.toString());
+    }
+
+    if (existingAlert && existingAlert.slack_sent === true) {
+      Logger.log(
+        '[SheetAlerts] runConditionCheck: row ' + (rowIndex + 1) +
+        ' already alerted (alert_id=' + existingAlert.id + '), skipping.'
+      );
+      skipped++;
+      continue;
+    }
+    // ── End dedup check ────────────────────────────────────────────────────
+
     var alertPayload = {
       spreadsheet_id: spreadsheetId,
       sheet_name: config.sheet_name,
@@ -198,5 +226,8 @@ function runConditionCheck() {
     }
   }
 
-  Logger.log('[SheetAlerts] runConditionCheck: scan complete. Notified ' + notified + ' row(s).');
+  Logger.log(
+    '[SheetAlerts] runConditionCheck: scan complete. Notified ' + notified +
+    ' row(s), skipped ' + skipped + ' already-alerted row(s).'
+  );
 }
